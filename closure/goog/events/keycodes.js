@@ -253,6 +253,10 @@ goog.events.KeyCodes.firesKeyPressEvent = function(keyCode, opt_heldKeyCode,
     return false;
   }
 
+  // handle consequent CTRL-something combos while CTRL is left pressed
+  // problem occured in webkit but it seems it is already fixed???
+  if (goog.userAgent.WEBKIT && opt_ctrlKey) { return false; }
+
   // Saves Ctrl or Alt + key for IE and WebKit 525+, which won't fire keypress.
   // Non-IE browsers and WebKit prior to 525 won't get this far so no need to
   // check the user agent.

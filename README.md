@@ -1,3 +1,8 @@
+closure-library
+===============
+
+Forked Google closure library, with small adjustments.
+
 Closure Library is a powerful, low level JavaScript library designed
 for building complex and scalable web applications. It is used by many
 major Google web applications, such as Gmail and Google Docs.

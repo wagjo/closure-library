@@ -10,3 +10,14 @@
 
 # python
 *.pyc
+
+pom.xml
+*jar
+/lib/
+/classes/
+/targets/
+/target/
+*/classes/
+*/targets/
+*/target/
+.lein-deps-sum
