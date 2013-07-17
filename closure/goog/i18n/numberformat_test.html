@@ -20,6 +20,7 @@ See the COPYING file for details.
   goog.require('goog.i18n.CompactNumberFormatSymbols_de');
   goog.require('goog.testing.ExpectedFailures');
   goog.require('goog.testing.jsunit');
+  goog.require('goog.testing.PropertyReplacer');
   goog.require('goog.userAgent');
   goog.require('goog.userAgent.product');
   goog.require('goog.userAgent.product.isVersion');
@@ -30,6 +31,8 @@ See the COPYING file for details.
 
 var expectedFailures = new goog.testing.ExpectedFailures();
 
+var stubs = new goog.testing.PropertyReplacer();
+
 function setUp() {
   // Always switch back to English on startup.
   goog.i18n.NumberFormatSymbols = goog.i18n.NumberFormatSymbols_en;
@@ -38,6 +41,7 @@ function setUp() {
 
 function tearDown() {
   expectedFailures.handleTearDown();
+  stubs.reset();
 }
 
 function veryBigNumberCompare(str1, str2) {
@@ -101,6 +105,10 @@ function testStandardFormat() {
   fmt = new goog.i18n.NumberFormat(goog.i18n.NumberFormat.Format.SCIENTIFIC);
   str = fmt.format(1234.579);
   assertEquals('1E3', str);
+  // Math.log(1000000)/Math.LN10 is strictly less than 6. Make sure it gets
+  // formatted correctly.
+  str = fmt.format(1000000);
+  assertEquals('1E6', str);
 }
 
 function testNegativePercentage() {
@@ -839,6 +847,137 @@ function testCompactWithoutSignificant2() {
   assertEquals('123.46K', fmt.format(123456.7));
   assertEquals('999.99K', fmt.format(999994));
   assertEquals('1M', fmt.format(999995));
+}
+
+function testShowTrailingZerosWithSignificantDigits() {
+  var fmt = new goog.i18n.NumberFormat(goog.i18n.NumberFormat.Format.DECIMAL);
+  fmt.setSignificantDigits(2);
+  fmt.setShowTrailingZeros(true);
+
+  assertEquals('2.0', fmt.format(2));
+  assertEquals('2,000', fmt.format(2000));
+  assertEquals('0.20', fmt.format(0.2));
+  assertEquals('0.02', fmt.format(0.02));
+  assertEquals('0.002', fmt.format(0.002));
+  assertEquals('0.00', fmt.format(0));
+
+  fmt.setShowTrailingZeros(false);
+  assertEquals('2', fmt.format(2));
+  assertEquals('0.2', fmt.format(0.2));
+}
+
+
+function testShowTrailingZerosWithSignificantDigitsCompactShort() {
+  var fmt = new goog.i18n.NumberFormat(
+      goog.i18n.NumberFormat.Format.COMPACT_SHORT);
+  fmt.setSignificantDigits(2);
+  fmt.setShowTrailingZeros(true);
+
+  assertEquals('2.0', fmt.format(2));
+  assertEquals('2.0K', fmt.format(2000));
+  assertEquals('20', fmt.format(20));
+}
+
+function testCurrencyCodeOrder() {
+  goog.i18n.NumberFormatSymbols = goog.i18n.NumberFormatSymbols_fr;
+  goog.i18n.CompactNumberFormatSymbols = goog.i18n.CompactNumberFormatSymbols_fr;
+  var fmt = new goog.i18n.NumberFormat(goog.i18n.NumberFormat.Format.CURRENCY);
+  assertFalse(fmt.isCurrencyCodeBeforeValue());
+
+  goog.i18n.NumberFormatSymbols = goog.i18n.NumberFormatSymbols_en;
+  goog.i18n.CompactNumberFormatSymbols = goog.i18n.CompactNumberFormatSymbols_en;
+  var fmt1 = new goog.i18n.NumberFormat(goog.i18n.NumberFormat.Format.CURRENCY);
+  assertTrue(fmt1.isCurrencyCodeBeforeValue());
+
+  // Check that we really have different formatters with different patterns
+  assertFalse(fmt.isCurrencyCodeBeforeValue());
+
+
+  // Using custom patterns instead of standard locale ones
+
+  fmt = new goog.i18n.NumberFormat("\u00A4 #0");
+  assertTrue(fmt.isCurrencyCodeBeforeValue());
+
+  fmt = new goog.i18n.NumberFormat("\u00A4 0 and #");
+  assertTrue(fmt.isCurrencyCodeBeforeValue());
+
+  fmt = new goog.i18n.NumberFormat("#0 \u00A4");
+  assertFalse(fmt.isCurrencyCodeBeforeValue());
+
+  fmt = new goog.i18n.NumberFormat("0 and # \u00A4");
+  assertFalse(fmt.isCurrencyCodeBeforeValue());
+
+  fmt = new goog.i18n.NumberFormat("\u00A4 0");
+  assertTrue(fmt.isCurrencyCodeBeforeValue());
+
+  fmt = new goog.i18n.NumberFormat("0 \u00A4");
+  assertFalse(fmt.isCurrencyCodeBeforeValue());
+
+  fmt = new goog.i18n.NumberFormat("\u00A4 #");
+  assertTrue(fmt.isCurrencyCodeBeforeValue());
+
+  fmt = new goog.i18n.NumberFormat("# \u00A4");
+  assertFalse(fmt.isCurrencyCodeBeforeValue());
+
+
+  // Edge cases, should never happen (like #0 separated by currency symbol,
+  // or missing currency symbol, or missing both # and 0, or missing all)
+  // We still make sure we get reasonable results (as much as possible)
+
+  fmt = new goog.i18n.NumberFormat("0 \u00A4 #");
+  assertFalse(fmt.isCurrencyCodeBeforeValue());
+
+  fmt = new goog.i18n.NumberFormat("# \u00A4 0");
+  assertFalse(fmt.isCurrencyCodeBeforeValue());
+
+  fmt = new goog.i18n.NumberFormat("\u00A4");
+  assertTrue(fmt.isCurrencyCodeBeforeValue());  // currency first, en_US style
+
+  fmt = new goog.i18n.NumberFormat("0");
+  assertTrue(fmt.isCurrencyCodeBeforeValue());  // currency first, en_US style
+
+  fmt = new goog.i18n.NumberFormat("#");
+  assertTrue(fmt.isCurrencyCodeBeforeValue());  // currency first, en_US style
+
+  fmt = new goog.i18n.NumberFormat("#0");
+  assertTrue(fmt.isCurrencyCodeBeforeValue());  // currency first, en_US style
+
+  fmt = new goog.i18n.NumberFormat("0 and #");
+  assertTrue(fmt.isCurrencyCodeBeforeValue());  // currency first, en_US style
+
+  fmt = new goog.i18n.NumberFormat("nothing");
+  assertTrue(fmt.isCurrencyCodeBeforeValue());  // currency first, en_US style
+}
+
+function testCompactWithBaseFormattingNumber() {
+  var fmt = new goog.i18n.NumberFormat(
+      goog.i18n.NumberFormat.Format.COMPACT_SHORT);
+
+  fmt.setBaseFormatting(1000);
+  assertEquals('0.8K', fmt.format(800, 1000));
+
+  fmt.setBaseFormatting(null);
+  assertEquals('800', fmt.format(800, 1000));
+  fmt.setBaseFormatting(1000);
+  assertEquals('1,200K', fmt.format(1200000, 1000));
+  assertEquals('0.01K', fmt.format(10, 1000));
+  fmt.setSignificantDigits(0);
+  fmt.setMinimumFractionDigits(2);
+  assertEquals('0.00K', fmt.format(1, 1000));
+}
+
+function testCompactWithBaseFormattingFrench() {
+  // Switch to French.
+  stubs.set(goog.i18n, 'NumberFormatSymbols', goog.i18n.NumberFormatSymbols_fr);
+  stubs.set(goog.i18n, 'CompactNumberFormatSymbols',
+            goog.i18n.CompactNumberFormatSymbols_fr);
+
+  var fmt = new goog.i18n.NumberFormat(
+      goog.i18n.NumberFormat.Format.COMPACT_SHORT);
+  assertEquals('123\u00A0M', fmt.format(123400000));
+  fmt.setBaseFormatting(1000);
+  assertEquals('123\u00A0400\u00A0K', fmt.format(123400000));
+
 }
 
 </script>

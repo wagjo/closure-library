@@ -24,9 +24,11 @@ goog.provide('goog.i18n.NumberFormat');
 goog.provide('goog.i18n.NumberFormat.CurrencyStyle');
 goog.provide('goog.i18n.NumberFormat.Format');
 
+goog.require('goog.asserts');
 goog.require('goog.i18n.CompactNumberFormatSymbols');
 goog.require('goog.i18n.NumberFormatSymbols');
 goog.require('goog.i18n.currency');
+goog.require('goog.math');
 
 
 
@@ -56,6 +58,13 @@ goog.i18n.NumberFormat = function(pattern, opt_currency, opt_currencyStyle) {
   this.minExponentDigits_ = 0;
   this.useSignForPositiveExponent_ = false;
 
+  /**
+   * Whether to show trailing zeros in the fraction when significantDigits_ is
+   * positive.
+   * @private {boolean}
+   */
+  this.showTrailingZeros_ = false;
+
   this.positivePrefix_ = '';
   this.positiveSuffix_ = '';
   this.negativePrefix_ = '-';
@@ -67,6 +76,14 @@ goog.i18n.NumberFormat = function(pattern, opt_currency, opt_currencyStyle) {
   this.decimalSeparatorAlwaysShown_ = false;
   this.useExponentialNotation_ = false;
   this.compactStyle_ = goog.i18n.NumberFormat.CompactStyle.NONE;
+
+  /**
+   * The number to base the formatting on when using compact styles, or null
+   * if formatting should not be based on another number.
+   * @type {?number}
+   * @private
+   */
+  this.baseFormattingNumber_ = null;
 
   if (typeof pattern == 'number') {
     this.applyStandardPattern_(pattern);
@@ -179,12 +196,49 @@ goog.i18n.NumberFormat.prototype.setSignificantDigits = function(number) {
   this.significantDigits_ = number;
 };
 
+
 /**
- * Sets number of significant digits to show. Only fractions will be rounded.
+ * Gets number of significant digits to show. Only fractions will be rounded.
  * @return {number} The number of significant digits to include.
  */
 goog.i18n.NumberFormat.prototype.getSignificantDigits = function() {
   return this.significantDigits_;
+};
+
+
+/**
+ * Sets whether trailing fraction zeros should be shown when significantDigits_
+ * is positive. If this is true and significantDigits_ is 2, 1 will be formatted
+ * as '1.0'.
+ * @param {boolean} showTrailingZeros Whether trailing zeros should be shown.
+ */
+goog.i18n.NumberFormat.prototype.setShowTrailingZeros =
+    function(showTrailingZeros) {
+  this.showTrailingZeros_ = showTrailingZeros;
+};
+
+
+/**
+ * Sets a number to base the formatting on when compact style formatting is
+ * used. If this is null, the formatting should be based only on the number to
+ * be formatting.
+ *
+ * This base formatting number can be used to format the target number as
+ * another number would be formatted. For example, 100,000 is normally formatted
+ * as "100K" in the COMPACT_SHORT format. To instead format it as '0.1M', the
+ * base number could be set to 1,000,000 in order to force all numbers to be
+ * formatted in millions. Similarly, 1,000,000,000 would normally be formatted
+ * as '1B' and setting the base formatting number to 1,000,000, would cause it
+ * to be formatted instead as '1,000M'.
+ *
+ * @param {?number} baseFormattingNumber The number to base formatting on, or
+ * null if formatting should not be based on another number.
+ */
+goog.i18n.NumberFormat.prototype.setBaseFormatting =
+    function(baseFormattingNumber) {
+  goog.asserts.assert(goog.isNull(baseFormattingNumber) ||
+      isFinite(baseFormattingNumber));
+  this.baseFormattingNumber_ = baseFormattingNumber;
 };
 
 
@@ -429,7 +483,10 @@ goog.i18n.NumberFormat.prototype.format = function(number) {
   }
 
   var parts = [];
-  var unit = this.getUnitAfterRounding_(number);
+  var baseFormattingNumber = goog.isNull(this.baseFormattingNumber_) ?
+      number :
+      this.baseFormattingNumber_;
+  var unit = this.getUnitAfterRounding_(baseFormattingNumber, number);
   number /= Math.pow(10, unit.divisorBase);
 
   parts.push(unit.prefix);
@@ -505,7 +562,17 @@ goog.i18n.NumberFormat.prototype.subformatFixed_ =
   var intValue = rounded.intValue;
   var fracValue = rounded.fracValue;
 
-  var fractionPresent = this.minimumFractionDigits_ > 0 || fracValue > 0;
+  var numIntDigits = (intValue == 0) ? 0 : this.intLog10_(intValue) + 1;
+  var fractionPresent = this.minimumFractionDigits_ > 0 || fracValue > 0 ||
+      (this.showTrailingZeros_ && numIntDigits < this.significantDigits_);
+  var minimumFractionDigits = this.minimumFractionDigits_;
+  if (fractionPresent) {
+    if (this.showTrailingZeros_ && this.significantDigits_ > 0) {
+      minimumFractionDigits = this.significantDigits_ - numIntDigits;
+    } else {
+      minimumFractionDigits = this.minimumFractionDigits_;
+    }
+  }
 
   var intPart = '';
   var translatableInt = intValue;
@@ -550,7 +617,7 @@ goog.i18n.NumberFormat.prototype.subformatFixed_ =
   var fracPart = '' + (fracValue + power);
   var fracLen = fracPart.length;
   while (fracPart.charAt(fracLen - 1) == '0' &&
-         fracLen > this.minimumFractionDigits_ + 1) {
+      fracLen > minimumFractionDigits + 1) {
     fracLen--;
   }
 
@@ -604,7 +671,7 @@ goog.i18n.NumberFormat.prototype.subformatExponential_ =
     return;
   }
 
-  var exponent = Math.floor(Math.log(number) / Math.log(10));
+  var exponent = goog.math.safeFloor(Math.log(number) / Math.log(10));
   number /= Math.pow(10, exponent);
 
   var minIntDigits = this.minimumIntegerDigits_;
@@ -1036,24 +1103,39 @@ goog.i18n.NumberFormat.prototype.getUnitFor_ = function(base, plurality) {
 /**
  * Get the compact unit divisor, accounting for rounding of the quantity.
  *
- * @param {number} number The number to get the unit for.
+ * @param {number} formattingNumber The number to base the formatting on. The
+ *     unit will be calculated from this number.
+ * @param {number} pluralityNumber The number to use for calculating the
+ *     plurality.
  * @return {!goog.i18n.NumberFormat.CompactNumberUnit} The unit after rounding.
  * @private
  */
-goog.i18n.NumberFormat.prototype.getUnitAfterRounding_ = function(number) {
+goog.i18n.NumberFormat.prototype.getUnitAfterRounding_ =
+    function(formattingNumber, pluralityNumber) {
   if (this.compactStyle_ == goog.i18n.NumberFormat.CompactStyle.NONE) {
     return goog.i18n.NumberFormat.NULL_UNIT_;
   }
 
-  number = Math.abs(number);
+  formattingNumber = Math.abs(formattingNumber);
+  pluralityNumber = Math.abs(pluralityNumber);
 
-  var plurality = this.pluralForm_(number);
-  var base = number <= 1 ? 0 : this.intLog10_(number);
-  var initialDivisor = this.getUnitFor_(base, plurality).divisorBase;
-  var attempt = number / Math.pow(10, initialDivisor);
-  var rounded = this.roundNumber_(attempt);
-  var finalPlurality = this.pluralForm_(rounded.intValue + rounded.fracValue);
-  return this.getUnitFor_(initialDivisor + this.intLog10_(rounded.intValue),
+  var initialPlurality = this.pluralForm_(formattingNumber);
+  // Compute the exponent from the formattingNumber, to compute the unit.
+  var base = formattingNumber <= 1 ? 0 : this.intLog10_(formattingNumber);
+  var initialDivisor = this.getUnitFor_(base, initialPlurality).divisorBase;
+  // Round both numbers based on the unit used.
+  var pluralityAttempt = pluralityNumber / Math.pow(10, initialDivisor);
+  var pluralityRounded = this.roundNumber_(pluralityAttempt);
+  var formattingAttempt = formattingNumber / Math.pow(10, initialDivisor);
+  var formattingRounded = this.roundNumber_(formattingAttempt);
+  // Compute the plurality of the pluralityNumber when formatted using the name
+  // units as the formattingNumber.
+  var finalPlurality =
+      this.pluralForm_(pluralityRounded.intValue + pluralityRounded.fracValue);
+  // Get the final unit, using the rounded formatting number to get the correct
+  // unit, and the plurality computed from the pluralityNumber.
+  return this.getUnitFor_(
+      initialDivisor + this.intLog10_(formattingRounded.intValue),
       finalPlurality);
 };
 
@@ -1112,4 +1194,35 @@ goog.i18n.NumberFormat.prototype.roundToSignificantDigits_ =
 goog.i18n.NumberFormat.prototype.pluralForm_ = function(quantity) {
   /* TODO: Implement */
   return 'other';
+};
+
+
+/**
+ * Checks if the currency symbol comes before the value ($12) or after (12$)
+ * Handy for applications that need to have separate UI fields for the currency
+ * value and symbol, especially for input: Price: [USD] [123.45]
+ * The currency symbol might be a combo box, or a label.
+ *
+ * @return {boolean} true if currency is before value.
+ */
+goog.i18n.NumberFormat.prototype.isCurrencyCodeBeforeValue = function() {
+  var posCurrSymbol = this.pattern_.indexOf('\u00A4'); // '¤' Currency sign
+  var posPound = this.pattern_.indexOf('#');
+  var posZero = this.pattern_.indexOf('0');
+
+  // posCurrValue is the first '#' or '0' found.
+  // If none of them is found (not possible, but still),
+  // the result is true (postCurrSymbol < MAX_VALUE)
+  // That is OK, matches the en_US and ROOT locales.
+  var posCurrValue = Number.MAX_VALUE;
+  if (posPound >= 0 && posPound < posCurrValue) {
+    posCurrValue = posPound;
+  }
+  if (posZero >= 0 && posZero < posCurrValue) {
+    posCurrValue = posZero;
+  }
+
+  // No need to test, it is guaranteed that both these symbols exist.
+  // If not, we have bigger problems than this.
+  return posCurrSymbol < posCurrValue;
 };

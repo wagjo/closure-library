@@ -23,12 +23,12 @@ goog.provide('goog.ui.PopupBase.Type');
 
 goog.require('goog.Timer');
 goog.require('goog.dom');
+goog.require('goog.events');
 goog.require('goog.events.EventHandler');
 goog.require('goog.events.EventTarget');
 goog.require('goog.events.EventType');
 goog.require('goog.events.KeyCodes');
 goog.require('goog.fx.Transition');
-goog.require('goog.fx.Transition.EventType');
 goog.require('goog.style');
 goog.require('goog.userAgent');
 
@@ -780,7 +780,7 @@ goog.ui.PopupBase.prototype.onDocumentBlur_ = function(e) {
   // Ignore blur events if the active element is still inside the popup or if
   // there is no longer an active element.  For example, a widget like a
   // goog.ui.Button might programatically blur itself before losing tabIndex.
-  if (goog.userAgent.IE || goog.userAgent.OPERA) {
+  if (typeof document.activeElement != 'undefined') {
     var activeElement = doc.activeElement;
     if (!activeElement || goog.dom.contains(this.element_,
         activeElement) || activeElement.tagName == 'BODY') {
