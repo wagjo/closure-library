@@ -6,4 +6,5 @@
   :license {:name "Apache License 2.0"
             :url "http://www.apache.org/licenses/LICENSE-2.0"
             :distribution :repo
-            :comments "same as Google Closure Library"})
+            :comments "same as Google Closure Library"}
+  :jar-exclusions [#"project.clj"])
