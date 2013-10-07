@@ -117,14 +117,14 @@ goog.events.EventHandler.prototype.listen = function(src, type, opt_fn,
   }
   for (var i = 0; i < type.length; i++) {
     var listenerObj = goog.events.listen(
-        src, type[i], opt_fn || this,
+        src, type[i], opt_fn || this.handleEvent,
         opt_capture || false,
         opt_handler || this.handler_ || this);
 
-    if (goog.DEBUG && !listenerObj) {
-      // Some tests mock goog.events.listen, thus ensuring that
-      // they are never testing the real thing anyway, hence this is safe
-      // (except that #getListenerCount() will return the wrong value).
+    if (!listenerObj) {
+      // When goog.events.listen run on OFF_AND_FAIL or OFF_AND_SILENT
+      // (goog.events.CaptureSimulationMode) in IE8-, it will return null
+      // value.
       return this;
     }
 
@@ -160,8 +160,15 @@ goog.events.EventHandler.prototype.listenOnce = function(src, type, opt_fn,
     }
   } else {
     var listenerObj = goog.events.listenOnce(
-        src, type, opt_fn || this, opt_capture,
+        src, type, opt_fn || this.handleEvent, opt_capture,
         opt_handler || this.handler_ || this);
+    if (!listenerObj) {
+      // When goog.events.listen run on OFF_AND_FAIL or OFF_AND_SILENT
+      // (goog.events.CaptureSimulationMode) in IE8-, it will return null
+      // value.
+      return this;
+    }
+
     var key = listenerObj.key;
     this.keys_[key] = listenerObj;
   }
@@ -227,7 +234,8 @@ goog.events.EventHandler.prototype.unlisten = function(src, type, opt_fn,
       this.unlisten(src, type[i], opt_fn, opt_capture, opt_handler);
     }
   } else {
-    var listener = goog.events.getListener(src, type, opt_fn || this,
+    var listener = goog.events.getListener(src, type,
+        opt_fn || this.handleEvent,
         opt_capture, opt_handler || this.handler_ || this);
 
     if (listener) {

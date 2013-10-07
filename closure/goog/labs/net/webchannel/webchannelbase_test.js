@@ -26,12 +26,14 @@ goog.require('goog.array');
 goog.require('goog.dom');
 goog.require('goog.functions');
 goog.require('goog.json');
+goog.require('goog.labs.net.webChannel.ChannelRequest');
+goog.require('goog.labs.net.webChannel.ForwardChannelRequestPool');
 goog.require('goog.labs.net.webChannel.WebChannelBase');
+goog.require('goog.labs.net.webChannel.WebChannelBaseTransport');
 goog.require('goog.labs.net.webChannel.WebChannelDebug');
-goog.require('goog.labs.net.webChannel.WebChannelRequest');
+goog.require('goog.labs.net.webChannel.netUtils');
 goog.require('goog.labs.net.webChannel.requestStats');
 goog.require('goog.labs.net.webChannel.requestStats.Stat');
-goog.require('goog.net.tmpnetwork');
 goog.require('goog.structs.Map');
 goog.require('goog.testing.MockClock');
 goog.require('goog.testing.PropertyReplacer');
@@ -81,17 +83,32 @@ function debugToWindow(message) {
 
 
 /**
- * Stubs goog.net.tmpnetwork to always time out. It maintains the
- * contract given by goog.net.tmpnetwork.testGoogleCom, but always
+ * Stubs goog.labs.net.webChannel.netUtils to always time out. It maintains the
+ * contract given by goog.labs.net.webChannel.netUtils.testNetwork, but always
  * times out (calling callback(false)).
  *
- * stubTmpnetwork should be called in tests that require it before
- * a call to testGoogleCom happens. It is reset at tearDown.
+ * stubNetUtils should be called in tests that require it before
+ * a call to testNetwork happens. It is reset at tearDown.
  */
-function stubTmpnetwork() {
-  stubs.set(goog.net.tmpnetwork, 'testLoadImage',
+function stubNetUtils() {
+  stubs.set(goog.labs.net.webChannel.netUtils, 'testLoadImage',
       function(url, timeout, callback) {
         goog.Timer.callOnce(goog.partial(callback, false), timeout);
+      });
+}
+
+
+/**
+ * Stubs goog.labs.net.webChannel.ForwardChannelRequestPool.isSpdyEnabled_
+ * to manage the max pool size for the forward channel.
+ *
+ * @param {boolean} spdyEnabled Whether SPDY is enabled for the test.
+ */
+function stubSpdyCheck(spdyEnabled) {
+  stubs.set(goog.labs.net.webChannel.ForwardChannelRequestPool,
+      'isSpdyEnabled_',
+      function() {
+        return spdyEnabled;
       });
 }
 
@@ -100,6 +117,7 @@ function stubTmpnetwork() {
 /**
  * Mock ChannelRequest.
  * @constructor
+ * @struct
  */
 var MockChannelRequest = function(channel, channelDebug, opt_sessionId,
     opt_requestId, opt_retryId) {
@@ -186,13 +204,13 @@ MockChannelRequest.prototype.getRequestStartTime = function() {
 
 /**
  * @suppress {invalidCasts} The cast from MockChannelRequest to
- * WebChannelRequest is invalid and will not compile. *
+ * ChannelRequest is invalid and will not compile.
  */
 function setUpPage() {
   // Use our MockChannelRequests instead of the real ones.
-  goog.labs.net.webChannel.WebChannelRequest.createChannelRequest = function(
+  goog.labs.net.webChannel.ChannelRequest.createChannelRequest = function(
       channel, channelDebug, opt_sessionId, opt_requestId, opt_retryId) {
-    return /** @type {!goog.labs.net.webChannel.WebChannelRequest} */ (
+    return /** @type {!goog.labs.net.webChannel.ChannelRequest} */ (
         new MockChannelRequest(channel, channelDebug, opt_sessionId,
             opt_requestId, opt_retryId));
   };
@@ -274,6 +292,15 @@ function tearDown() {
 }
 
 
+function getSingleForwardRequest() {
+  var pool = channel.forwardChannelRequestPool_;
+  if (!pool.hasPendingRequest()) {
+    return null;
+  }
+  return pool.request_ || pool.requestPool_.getValues()[0];
+}
+
+
 /**
  * Helper function to return a formatted string representing an array of maps.
  */
@@ -331,9 +358,11 @@ function testFormatArrayOfMaps() {
  * @param {number=} opt_serverVersion
  * @param {string=} opt_hostPrefix
  * @param {string=} opt_uriPrefix
+ * @param {boolean=} opt_spdyEnabled
  */
 function connectForwardChannel(
-    opt_serverVersion, opt_hostPrefix, opt_uriPrefix) {
+    opt_serverVersion, opt_hostPrefix, opt_uriPrefix, opt_spdyEnabled) {
+  stubSpdyCheck(!!opt_spdyEnabled);
   var uriPrefix = opt_uriPrefix || '';
   channel.connect(uriPrefix + '/test', uriPrefix + '/bind', null);
   mockClock.tick(0);
@@ -346,9 +375,12 @@ function connectForwardChannel(
  * @param {number=} opt_serverVersion
  * @param {string=} opt_hostPrefix
  * @param {string=} opt_uriPrefix
+ * @param {boolean=} opt_spdyEnabled
  */
-function connect(opt_serverVersion, opt_hostPrefix, opt_uriPrefix) {
-  connectForwardChannel(opt_serverVersion, opt_hostPrefix, opt_uriPrefix);
+function connect(opt_serverVersion, opt_hostPrefix, opt_uriPrefix,
+    opt_spdyEnabled) {
+  connectForwardChannel(opt_serverVersion, opt_hostPrefix, opt_uriPrefix,
+      opt_spdyEnabled);
   completeBackChannel();
 }
 
@@ -395,10 +427,10 @@ function completeForwardChannel(opt_serverVersion, opt_hostPrefix) {
       (opt_serverVersion ? ',' + opt_serverVersion : '') +
       ']]]';
   channel.onRequestData(
-      channel.forwardChannelRequest_,
+      getSingleForwardRequest(),
       responseData);
   channel.onRequestComplete(
-      channel.forwardChannelRequest_);
+      getSingleForwardRequest());
   mockClock.tick(0);
 }
 
@@ -415,10 +447,10 @@ function completeBackChannel() {
 
 function responseDone() {
   channel.onRequestData(
-      channel.forwardChannelRequest_,
+      getSingleForwardRequest(),
       '[1,0,0]');  // mock data
   channel.onRequestComplete(
-      channel.forwardChannelRequest_);
+      getSingleForwardRequest());
   mockClock.tick(0);
 }
 
@@ -433,10 +465,10 @@ function responseNoBackchannel(
   var responseData = goog.json.serialize(
       [0, opt_lastArrayIdSentFromServer, opt_outstandingDataSize]);
   channel.onRequestData(
-      channel.forwardChannelRequest_,
+      getSingleForwardRequest(),
       responseData);
   channel.onRequestComplete(
-      channel.forwardChannelRequest_);
+      getSingleForwardRequest());
   mockClock.tick(0);
 }
 
@@ -444,11 +476,11 @@ function response(lastArrayIdSentFromServer, outstandingDataSize) {
   var responseData = goog.json.serialize(
       [1, lastArrayIdSentFromServer, outstandingDataSize]);
   channel.onRequestData(
-      channel.forwardChannelRequest_,
+      getSingleForwardRequest(),
       responseData
   );
   channel.onRequestComplete(
-      channel.forwardChannelRequest_);
+      getSingleForwardRequest());
   mockClock.tick(0);
 }
 
@@ -464,11 +496,11 @@ function receive(data) {
 
 
 function responseTimeout() {
-  channel.forwardChannelRequest_lastError_ =
-      goog.labs.net.webChannel.WebChannelRequest.Error.TIMEOUT;
-  channel.forwardChannelRequest_.successful_ = false;
+  getSingleForwardRequest().lastError_ =
+      goog.labs.net.webChannel.ChannelRequest.Error.TIMEOUT;
+  getSingleForwardRequest().successful_ = false;
   channel.onRequestComplete(
-      channel.forwardChannelRequest_);
+      getSingleForwardRequest());
   mockClock.tick(0);
 }
 
@@ -477,30 +509,30 @@ function responseTimeout() {
  * @param {number=} opt_statusCode
  */
 function responseRequestFailed(opt_statusCode) {
-  channel.forwardChannelRequest_.lastError_ =
-      goog.labs.net.webChannel.WebChannelRequest.Error.STATUS;
-  channel.forwardChannelRequest_.lastStatusCode_ =
+  getSingleForwardRequest().lastError_ =
+      goog.labs.net.webChannel.ChannelRequest.Error.STATUS;
+  getSingleForwardRequest().lastStatusCode_ =
       opt_statusCode || 503;
-  channel.forwardChannelRequest_.successful_ = false;
+  getSingleForwardRequest().successful_ = false;
   channel.onRequestComplete(
-      channel.forwardChannelRequest_);
+      getSingleForwardRequest());
   mockClock.tick(0);
 }
 
 
 function responseUnknownSessionId() {
-  channel.forwardChannelRequest_.lastError_ =
-      goog.labs.net.webChannel.WebChannelRequest.Error.UNKNOWN_SESSION_ID;
-  channel.forwardChannelRequest_.successful_ = false;
+  getSingleForwardRequest().lastError_ =
+      goog.labs.net.webChannel.ChannelRequest.Error.UNKNOWN_SESSION_ID;
+  getSingleForwardRequest().successful_ = false;
   channel.onRequestComplete(
-      channel.forwardChannelRequest_);
+      getSingleForwardRequest());
   mockClock.tick(0);
 }
 
 
 function responseActiveXBlocked() {
   channel.backChannelRequest_.lastError_ =
-      goog.labs.net.webChannel.WebChannelRequest.Error.ACTIVE_X_BLOCKED;
+      goog.labs.net.webChannel.ChannelRequest.Error.ACTIVE_X_BLOCKED;
   channel.backChannelRequest_.successful_ = false;
   channel.onRequestComplete(
       channel.backChannelRequest_);
@@ -522,7 +554,7 @@ function sendMap(key, value, opt_context) {
 
 
 function hasForwardChannel() {
-  return !!channel.forwardChannelRequest_;
+  return !!getSingleForwardRequest();
 }
 
 
@@ -610,6 +642,17 @@ function testConnect_notOkToMakeRequestForBind() {
 
 function testSendMap() {
   connect();
+  sendMapOnce();
+}
+
+
+function testSendMapWithSpdyEnabled() {
+  connect(undefined, undefined, undefined, true);
+  sendMapOnce();
+}
+
+
+function sendMapOnce() {
   assertEquals(1, numTimingEvents);
   sendMap('foo', 'bar');
   responseDone();
@@ -620,6 +663,17 @@ function testSendMap() {
 
 function testSendMap_twice() {
   connect();
+  sendMapTwice();
+}
+
+
+function testSendMap_twiceWithSpdyEnabled() {
+  connect(undefined, undefined, undefined, true);
+  sendMapTwice();
+}
+
+
+function sendMapTwice() {
   sendMap('foo1', 'bar1');
   responseDone();
   assertEquals('foo1:bar1', formatArrayOfMaps(deliveredMaps));
@@ -691,7 +745,7 @@ function testTimingEvent() {
   sendMap('', '');
   assertEquals(1, numTimingEvents);
   mockClock.tick(20);
-  var expSize = channel.forwardChannelRequest_.getPostData().length;
+  var expSize = getSingleForwardRequest().getPostData().length;
   responseDone();
 
   assertEquals(2, numTimingEvents);
@@ -700,7 +754,7 @@ function testTimingEvent() {
   assertEquals(0, lastPostRetryCount);
 
   sendMap('abcdefg', '123456');
-  expSize = channel.forwardChannelRequest_.getPostData().length;
+  expSize = getSingleForwardRequest().getPostData().length;
   responseTimeout();
   assertEquals(2, numTimingEvents);
   mockClock.tick(RETRY_TIME + 1);
@@ -718,32 +772,45 @@ function testTimingEvent() {
  * reports an error, and prevents another request from firing.
  */
 function testSetFailFastWhileWaitingForRetry() {
-  stubTmpnetwork();
+  stubNetUtils();
 
   connect();
+  setFailFastWhileWaitingForRetry();
+}
+
+
+function testSetFailFastWhileWaitingForRetryWithSpdyEnabled() {
+  stubNetUtils();
+
+  connect(undefined, undefined, undefined, true);
+  setFailFastWhileWaitingForRetry();
+}
+
+
+function setFailFastWhileWaitingForRetry() {
   assertEquals(1, numTimingEvents);
 
   sendMap('foo', 'bar');
   assertNull(channel.forwardChannelTimerId_);
-  assertNotNull(channel.forwardChannelRequest_);
+  assertNotNull(getSingleForwardRequest());
   assertEquals(0, channel.forwardChannelRetryCount_);
 
   // Watchdog timeout.
   responseTimeout();
   assertNotNull(channel.forwardChannelTimerId_);
-  assertNull(channel.forwardChannelRequest_);
+  assertNull(getSingleForwardRequest());
   assertEquals(1, channel.forwardChannelRetryCount_);
 
   // Almost finish the between-retry timeout.
   mockClock.tick(RETRY_TIME - 1);
   assertNotNull(channel.forwardChannelTimerId_);
-  assertNull(channel.forwardChannelRequest_);
+  assertNull(getSingleForwardRequest());
   assertEquals(1, channel.forwardChannelRetryCount_);
 
   // Setting max retries to 0 should cancel the timer and raise an error.
   channel.setFailFast(true);
   assertNull(channel.forwardChannelTimerId_);
-  assertNull(channel.forwardChannelRequest_);
+  assertNull(getSingleForwardRequest());
   assertEquals(1, channel.forwardChannelRetryCount_);
 
   assertTrue(gotError);
@@ -752,13 +819,13 @@ function testSetFailFastWhileWaitingForRetry() {
   // Simulate that timing out. We should get a network error in addition to the
   // initial failure.
   gotError = false;
-  mockClock.tick(goog.net.tmpnetwork.GOOGLECOM_TIMEOUT);
-  assertTrue('No error after tmpnetwork ping timed out.', gotError);
+  mockClock.tick(goog.labs.net.webChannel.netUtils.NETWORK_TIMEOUT);
+  assertTrue('No error after network ping timed out.', gotError);
 
   // Make sure no more retry timers are firing.
   mockClock.tick(ALL_DAY_MS);
   assertNull(channel.forwardChannelTimerId_);
-  assertNull(channel.forwardChannelRequest_);
+  assertNull(getSingleForwardRequest());
   assertEquals(1, channel.forwardChannelRetryCount_);
   assertEquals(1, numTimingEvents);
 }
@@ -769,58 +836,71 @@ function testSetFailFastWhileWaitingForRetry() {
  * reports an error, and prevents another request from firing.
  */
 function testSetFailFastWhileRetryXhrIsInFlight() {
-  stubTmpnetwork();
+  stubNetUtils();
 
   connect();
+  setFailFastWhileRetryXhrIsInFlight();
+}
+
+
+function testSetFailFastWhileRetryXhrIsInFlightWithSpdyEnabled() {
+  stubNetUtils();
+
+  connect(undefined, undefined, undefined, true);
+  setFailFastWhileRetryXhrIsInFlight();
+}
+
+
+function setFailFastWhileRetryXhrIsInFlight() {
   assertEquals(1, numTimingEvents);
 
   sendMap('foo', 'bar');
   assertNull(channel.forwardChannelTimerId_);
-  assertNotNull(channel.forwardChannelRequest_);
+  assertNotNull(getSingleForwardRequest());
   assertEquals(0, channel.forwardChannelRetryCount_);
 
   // Watchdog timeout.
   responseTimeout();
   assertNotNull(channel.forwardChannelTimerId_);
-  assertNull(channel.forwardChannelRequest_);
+  assertNull(getSingleForwardRequest());
   assertEquals(1, channel.forwardChannelRetryCount_);
 
   // Wait for the between-retry timeout.
   mockClock.tick(RETRY_TIME);
   assertNull(channel.forwardChannelTimerId_);
-  assertNotNull(channel.forwardChannelRequest_);
+  assertNotNull(getSingleForwardRequest());
   assertEquals(1, channel.forwardChannelRetryCount_);
 
   // Simulate a second watchdog timeout.
   responseTimeout();
   assertNotNull(channel.forwardChannelTimerId_);
-  assertNull(channel.forwardChannelRequest_);
+  assertNull(getSingleForwardRequest());
   assertEquals(2, channel.forwardChannelRetryCount_);
 
   // Wait for another between-retry timeout.
   mockClock.tick(RETRY_TIME);
   // Now the third req is in flight.
   assertNull(channel.forwardChannelTimerId_);
-  assertNotNull(channel.forwardChannelRequest_);
+  assertNotNull(getSingleForwardRequest());
   assertEquals(2, channel.forwardChannelRetryCount_);
 
   // Set fail fast, killing the request
   channel.setFailFast(true);
   assertNull(channel.forwardChannelTimerId_);
-  assertNull(channel.forwardChannelRequest_);
+  assertNull(getSingleForwardRequest());
   assertEquals(2, channel.forwardChannelRetryCount_);
 
   assertTrue(gotError);
   // We get the error immediately before starting to ping google.com.
   // Simulate that timing out. We should get a network error in addition to the
   gotError = false;
-  mockClock.tick(goog.net.tmpnetwork.GOOGLECOM_TIMEOUT);
-  assertTrue('No error after tmpnetwork ping timed out.', gotError);
+  mockClock.tick(goog.labs.net.webChannel.netUtils.NETWORK_TIMEOUT);
+  assertTrue('No error after network ping timed out.', gotError);
 
   // Make sure no more retry timers are firing.
   mockClock.tick(ALL_DAY_MS);
   assertNull(channel.forwardChannelTimerId_);
-  assertNull(channel.forwardChannelRequest_);
+  assertNull(getSingleForwardRequest());
   assertEquals(2, channel.forwardChannelRetryCount_);
   assertEquals(1, numTimingEvents);
 }
@@ -830,27 +910,27 @@ function testSetFailFastWhileRetryXhrIsInFlight() {
  * Makes sure that setting fail fast while not retrying doesn't cause a failure.
  */
 function testSetFailFastAtRetryCount() {
-  stubTmpnetwork();
+  stubNetUtils();
 
   connect();
   assertEquals(1, numTimingEvents);
 
   sendMap('foo', 'bar');
   assertNull(channel.forwardChannelTimerId_);
-  assertNotNull(channel.forwardChannelRequest_);
+  assertNotNull(getSingleForwardRequest());
   assertEquals(0, channel.forwardChannelRetryCount_);
 
   // Set fail fast.
   channel.setFailFast(true);
   // Request should still be alive.
   assertNull(channel.forwardChannelTimerId_);
-  assertNotNull(channel.forwardChannelRequest_);
+  assertNotNull(getSingleForwardRequest());
   assertEquals(0, channel.forwardChannelRetryCount_);
 
   // Watchdog timeout. Now we should get an error.
   responseTimeout();
   assertNull(channel.forwardChannelTimerId_);
-  assertNull(channel.forwardChannelRequest_);
+  assertNull(getSingleForwardRequest());
   assertEquals(0, channel.forwardChannelRetryCount_);
 
   assertTrue(gotError);
@@ -858,22 +938,35 @@ function testSetFailFastAtRetryCount() {
   // Simulate that timing out. We should get a network error in addition to the
   // initial failure.
   gotError = false;
-  mockClock.tick(goog.net.tmpnetwork.GOOGLECOM_TIMEOUT);
-  assertTrue('No error after tmpnetwork ping timed out.', gotError);
+  mockClock.tick(goog.labs.net.webChannel.netUtils.NETWORK_TIMEOUT);
+  assertTrue('No error after network ping timed out.', gotError);
 
   // Make sure no more retry timers are firing.
   mockClock.tick(ALL_DAY_MS);
   assertNull(channel.forwardChannelTimerId_);
-  assertNull(channel.forwardChannelRequest_);
+  assertNull(getSingleForwardRequest());
   assertEquals(0, channel.forwardChannelRetryCount_);
   assertEquals(1, numTimingEvents);
 }
 
 
 function testRequestFailedClosesChannel() {
-  stubTmpnetwork();
+  stubNetUtils();
 
   connect();
+  requestFailedClosesChannel();
+}
+
+
+function testRequestFailedClosesChannelWithSpdyEnabled() {
+  stubNetUtils();
+
+  connect(undefined, undefined, undefined, true);
+  requestFailedClosesChannel();
+}
+
+
+function requestFailedClosesChannel() {
   assertEquals(1, numTimingEvents);
 
   sendMap('foo', 'bar');
@@ -882,7 +975,7 @@ function testRequestFailedClosesChannel() {
   assertEquals('Should be closed immediately after request failed.',
       goog.labs.net.webChannel.WebChannelBase.State.CLOSED, channel.getState());
 
-  mockClock.tick(goog.net.tmpnetwork.GOOGLECOM_TIMEOUT);
+  mockClock.tick(goog.labs.net.webChannel.netUtils.NETWORK_TIMEOUT);
 
   assertEquals('Should remain closed after the ping timeout.',
       goog.labs.net.webChannel.WebChannelBase.State.CLOSED, channel.getState());
@@ -891,7 +984,7 @@ function testRequestFailedClosesChannel() {
 
 
 function testStatEventReportedOnlyOnce() {
-  stubTmpnetwork();
+  stubNetUtils();
 
   connect();
   sendMap('foo', 'bar');
@@ -904,13 +997,13 @@ function testStatEventReportedOnlyOnce() {
       lastStatEvent);
 
   numStatEvents = 0;
-  mockClock.tick(goog.net.tmpnetwork.GOOGLECOM_TIMEOUT);
+  mockClock.tick(goog.labs.net.webChannel.netUtils.NETWORK_TIMEOUT);
   assertEquals('No new stat events should be reported.', 0, numStatEvents);
 }
 
 
 function testActiveXBlockedEventReportedOnlyOnce() {
-  stubTmpnetwork();
+  stubNetUtils();
 
   connectForwardChannel();
   numStatEvents = 0;
@@ -921,13 +1014,13 @@ function testActiveXBlockedEventReportedOnlyOnce() {
   assertEquals(goog.labs.net.webChannel.requestStats.Stat.ERROR_OTHER,
       lastStatEvent);
 
-  mockClock.tick(goog.net.tmpnetwork.GOOGLECOM_TIMEOUT);
+  mockClock.tick(goog.labs.net.webChannel.netUtils.NETWORK_TIMEOUT);
   assertEquals('No new stat events should be reported.', 1, numStatEvents);
 }
 
 
 function testStatEventReportedOnlyOnce_onNetworkUp() {
-  stubTmpnetwork();
+  stubNetUtils();
 
   connect();
   sendMap('foo', 'bar');
@@ -939,7 +1032,7 @@ function testStatEventReportedOnlyOnce_onNetworkUp() {
       0, numStatEvents);
 
   // Let the ping time out.
-  mockClock.tick(goog.net.tmpnetwork.GOOGLECOM_TIMEOUT);
+  mockClock.tick(goog.labs.net.webChannel.netUtils.NETWORK_TIMEOUT);
 
   // Assert we report the correct stat event.
   assertEquals(1, numStatEvents);
@@ -950,7 +1043,7 @@ function testStatEventReportedOnlyOnce_onNetworkUp() {
 
 
 function testStatEventReportedOnlyOnce_onNetworkDown() {
-  stubTmpnetwork();
+  stubNetUtils();
 
   connect();
   sendMap('foo', 'bar');
@@ -962,8 +1055,8 @@ function testStatEventReportedOnlyOnce_onNetworkDown() {
       0, numStatEvents);
 
   // Wait half the ping timeout period, and then fake the network being up.
-  mockClock.tick(goog.net.tmpnetwork.GOOGLECOM_TIMEOUT / 2);
-  channel.testGoogleComCallback_(true);
+  mockClock.tick(goog.labs.net.webChannel.netUtils.NETWORK_TIMEOUT / 2);
+  channel.testNetworkCallback_(true);
 
   // Assert we report the correct stat event.
   assertEquals(1, numStatEvents);
@@ -974,6 +1067,17 @@ function testStatEventReportedOnlyOnce_onNetworkDown() {
 
 function testOutgoingMapsAwaitsResponse() {
   connect();
+  outgoingMapsAwaitsResponse();
+}
+
+
+function testOutgoingMapsAwaitsResponseWithSpdyEnabled() {
+  connect(undefined, undefined, undefined, true);
+  outgoingMapsAwaitsResponse();
+}
+
+
+function outgoingMapsAwaitsResponse() {
   assertEquals(0, channel.outgoingMaps_.length);
 
   sendMap('foo1', 'bar');
@@ -990,6 +1094,7 @@ function testOutgoingMapsAwaitsResponse() {
   // are dequeued from the array of outgoing maps into this new forward request.
   assertEquals(0, channel.outgoingMaps_.length);
 }
+
 
 function testUndeliveredMaps_doesNotNotifyWhenSuccessful() {
   /**
@@ -1087,7 +1192,7 @@ function testUndeliveredMaps_serviceUnavailable() {
 
 
 function testUndeliveredMaps_onPingTimeout() {
-  stubTmpnetwork();
+  stubNetUtils();
 
   connect();
 
@@ -1098,7 +1203,7 @@ function testUndeliveredMaps_onPingTimeout() {
   responseRequestFailed();
 
   // Let the ping time out, unsuccessfully.
-  mockClock.tick(goog.net.tmpnetwork.GOOGLECOM_TIMEOUT);
+  mockClock.tick(goog.labs.net.webChannel.netUtils.NETWORK_TIMEOUT);
 
   // Assert channel is closed.
   assertEquals(goog.labs.net.webChannel.WebChannelBase.State.CLOSED,
@@ -1116,7 +1221,7 @@ function testResponseNoBackchannelPostNotBeforeBackchannel() {
 
   mockClock.tick(10);
   assertFalse(channel.backChannelRequest_.getRequestStartTime() <
-      channel.forwardChannelRequest_.getRequestStartTime());
+      getSingleForwardRequest().getRequestStartTime());
   responseNoBackchannel();
   assertNotEquals(
       goog.labs.net.webChannel.requestStats.Stat.BACKCHANNEL_MISSING,
@@ -1132,7 +1237,7 @@ function testResponseNoBackchannel() {
   sendMap('foo2', 'bar2');
   assertTrue(channel.backChannelRequest_.getRequestStartTime() +
       goog.labs.net.webChannel.WebChannelBase.RTT_ESTIMATE <
-      channel.forwardChannelRequest_.getRequestStartTime());
+      getSingleForwardRequest().getRequestStartTime());
   responseNoBackchannel();
   assertEquals(
       goog.labs.net.webChannel.requestStats.Stat.BACKCHANNEL_MISSING,
@@ -1302,7 +1407,7 @@ function testResponseWithGarbage() {
   connect(8);
   sendMap('foo1', 'bar1');
   channel.onRequestData(
-      channel.forwardChannelRequest_,
+      getSingleForwardRequest(),
       'garbage'
   );
   assertEquals(goog.labs.net.webChannel.WebChannelBase.State.CLOSED,
@@ -1314,7 +1419,7 @@ function testResponseWithGarbageInArray() {
   connect(8);
   sendMap('foo1', 'bar1');
   channel.onRequestData(
-      channel.forwardChannelRequest_,
+      getSingleForwardRequest(),
       '["garbage"]'
   );
   assertEquals(goog.labs.net.webChannel.WebChannelBase.State.CLOSED,
@@ -1326,7 +1431,7 @@ function testResponseWithEvilData() {
   connect(8);
   sendMap('foo1', 'bar1');
   channel.onRequestData(
-      channel.forwardChannelRequest_,
+      getSingleForwardRequest(),
       'foo=<script>evil()\<\/script>&' + 'bar=<script>moreEvil()\<\/script>');
   assertEquals(goog.labs.net.webChannel.WebChannelBase.State.CLOSED,
       channel.getState());
@@ -1397,4 +1502,26 @@ function testSetParser() {
 
   assertEquals(1, call3.getArguments().length);
   assertEquals('[[1,["foo"]]]', call3.getArgument(0));
+}
+
+function testSpdyLimitOption() {
+  var webChannelTransport =
+      new goog.labs.net.webChannel.WebChannelBaseTransport();
+  stubSpdyCheck(true);
+  var webChannelDefault = webChannelTransport.createWebChannel('/foo');
+  assertEquals(10,
+      webChannelDefault.getRuntimeProperties().getSpdyRequestLimit());
+
+  var options = {'spdyRequestLimit': 100};
+
+  stubSpdyCheck(false);
+  var webChannelDisabled = webChannelTransport.createWebChannel(
+      '/foo', options);
+  assertEquals(1,
+      webChannelDisabled.getRuntimeProperties().getSpdyRequestLimit());
+
+  stubSpdyCheck(true);
+  var webChannelEnabled = webChannelTransport.createWebChannel('/foo', options);
+  assertEquals(100,
+      webChannelEnabled.getRuntimeProperties().getSpdyRequestLimit());
 }

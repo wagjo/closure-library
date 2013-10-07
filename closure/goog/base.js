@@ -58,7 +58,7 @@ goog.global = this;
  *
  * Example:
  * <pre>
- *   var CLOSURE_DEFINES = {'goog.DEBUG', false};
+ *   var CLOSURE_DEFINES = {'goog.DEBUG': false};
  * </pre>
  *
  * @type {Object.<string, (string|number|boolean)>|undefined}
@@ -963,6 +963,19 @@ goog.getUid = function(obj) {
 
 
 /**
+ * Whether the given object is alreay assigned a unique ID.
+ *
+ * This does not modify the object.
+ *
+ * @param {Object} obj The object to check.
+ * @return {boolean} Whether there an assigned unique id for the object.
+ */
+goog.hasUid = function(obj) {
+  return !!obj[goog.UID_PROPERTY_];
+};
+
+
+/**
  * Removes the unique ID from an object. This is useful if the object was
  * previously mutated using {@code goog.getUid} in which case the mutation is
  * undone.
@@ -1161,9 +1174,10 @@ goog.bind = function(fn, selfObj, var_args) {
 goog.partial = function(fn, var_args) {
   var args = Array.prototype.slice.call(arguments, 1);
   return function() {
-    // Prepend the bound arguments to the current arguments.
-    var newArgs = Array.prototype.slice.call(arguments);
-    newArgs.unshift.apply(newArgs, args);
+    // Clone the array (with slice()) and append additional arguments
+    // to the existing arguments.
+    var newArgs = args.slice();
+    newArgs.push.apply(newArgs, arguments);
     return fn.apply(this, newArgs);
   };
 };

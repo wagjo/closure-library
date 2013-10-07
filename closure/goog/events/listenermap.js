@@ -20,6 +20,7 @@
  * WARNING: Do not use this class from outside goog.events package.
  *
  * @visibility {//closure/goog/events:__pkg__}
+ * @visibility {//closure/goog/labs/events:__pkg__}
  */
 
 goog.provide('goog.events.ListenerMap');
@@ -188,7 +189,7 @@ goog.events.ListenerMap.prototype.removeAll = function(opt_type) {
       var listenerArray = this.listeners[type];
       for (var i = 0; i < listenerArray.length; i++) {
         ++count;
-        listenerArray[i].removed = true;
+        listenerArray[i].markAsRemoved();
       }
       delete this.listeners[type];
       this.typeCount_--;
