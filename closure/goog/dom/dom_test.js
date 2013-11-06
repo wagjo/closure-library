@@ -111,7 +111,19 @@ function testGetRequiredElementDomHelper() {
   assertTrue(goog.isDefAndNotNull(el));
   assertEquals('testEl', el.id);
   assertThrows(function() {
-    domHelper.getRequiredElement('does_not_exist');
+    goog.dom.getRequiredElementByClass('does_not_exist', container);
+  });
+}
+
+function testGetRequiredElementByClassDomHelper() {
+  var domHelper = new goog.dom.DomHelper();
+  assertNotNull(domHelper.getRequiredElementByClass('test1'));
+  assertNotNull(domHelper.getRequiredElementByClass('test2'));
+
+  var container = domHelper.getElement('span-container');
+  assertNotNull(domHelper.getElementByClass('test1', container));
+  assertThrows(function() {
+    domHelper.getRequiredElementByClass('does_not_exist', container);
   });
 }
 
@@ -1001,6 +1013,9 @@ function testSetFocusableTabIndex() {
 
 function testIsFocusable() {
   // Test all types of form elements with no tab index specified are focusable.
+  assertTrue('isFocusable() must be true for anchor elements with ' +
+      'no tab index',
+      goog.dom.isFocusable(goog.dom.getElement('noTabIndexAnchor')));
   assertTrue('isFocusable() must be true for input elements with ' +
       'no tab index',
       goog.dom.isFocusable(goog.dom.getElement('noTabIndexInput')));

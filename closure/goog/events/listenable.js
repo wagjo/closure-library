@@ -19,6 +19,9 @@
 goog.provide('goog.events.Listenable');
 goog.provide('goog.events.ListenableKey');
 
+/** @suppress {extraRequire} */
+goog.require('goog.events.EventId');
+
 
 
 /**
@@ -310,8 +313,7 @@ goog.events.ListenableKey.prototype.type;
 
 /**
  * The listener function.
- * TODO(user): Narrow the type if possible.
- * @type {Function|Object}
+ * @type {function(?):?|{handleEvent:function(?):?}|null}
  */
 goog.events.ListenableKey.prototype.listener;
 
